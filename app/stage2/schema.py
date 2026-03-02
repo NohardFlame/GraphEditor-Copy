@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EvidenceRef(BaseModel):
@@ -22,6 +22,7 @@ class EvidenceRefLLM(BaseModel):
 
 
 class DecisionBlock(BaseModel):
+    """Internal decision block; canonical_claim_id set by runner when kind==MERGE_INTO."""
     model_config = ConfigDict(extra="forbid")
     kind: Literal[
         "ACCEPT_AS_CANONICAL",
@@ -31,16 +32,7 @@ class DecisionBlock(BaseModel):
         "SPLIT_CONFLICT",
     ]
     canonical_claim_id: str | None = None
-    confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = ""
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-
-
-class NormalizationBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    canonical_label: str | None = None
-    aliases: list[str] = Field(default_factory=list)
-    notes: str | None = None
 
 
 class ActionEndpoints(BaseModel):
@@ -49,28 +41,32 @@ class ActionEndpoints(BaseModel):
     object_claim_id: str | None = None
 
 
+class StateEndpoints(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    object_claim_id: str | None = None
+
+
 class AttachmentsBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
     object_claim_ids: list[str] = Field(default_factory=list)
     actor_claim_ids: list[str] = Field(default_factory=list)
     action_endpoints: ActionEndpoints = Field(default_factory=ActionEndpoints)
+    state_endpoints: StateEndpoints = Field(default_factory=StateEndpoints)
+
+    @field_validator("object_claim_ids", "actor_claim_ids", mode="before")
+    @classmethod
+    def drop_nulls_from_id_lists(cls, v: object) -> list[str]:
+        """LLM sometimes returns [null]; we only allow non-empty strings."""
+        if not isinstance(v, list):
+            return []
+        return [x for x in v if isinstance(x, str) and x.strip()]
 
 
-class ConflictMember(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    claim_id: str
-    role: Literal["seed", "candidate", "other"]
-    reason: str = ""
-
-
-class ConflictBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    group_label: str | None = None
-    members: list[ConflictMember] = Field(default_factory=list)
+DECISION_KINDS = ("ACCEPT_AS_CANONICAL", "MERGE_INTO", "REJECT", "DEFER", "SPLIT_CONFLICT")
 
 
 class DecisionBlockLLM(BaseModel):
-    """LLM-facing: evidence_refs contain only snippet; IDs filled server-side."""
+    """LLM-facing: only kind (required) and evidence_refs; IDs filled server-side. We coerce empty/invalid kind to DEFER."""
     model_config = ConfigDict(extra="forbid")
     kind: Literal[
         "ACCEPT_AS_CANONICAL",
@@ -79,29 +75,37 @@ class DecisionBlockLLM(BaseModel):
         "DEFER",
         "SPLIT_CONFLICT",
     ]
-    canonical_claim_id: str | None = None
-    confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = ""
     evidence_refs: list[EvidenceRefLLM] = Field(default_factory=list)
+    # Optional; accepted for consistency but ignored by the system (not used in validation or applier).
+    new_entity_reason: str | None = None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def coerce_kind(cls, v: object) -> str:
+        """Coerce empty or invalid kind to DEFER so we can parse and leave seed UNREVIEWED."""
+        if v in DECISION_KINDS:
+            return v
+        if isinstance(v, str) and v.strip():
+            vn = v.strip().upper().replace(" ", "_")
+            if vn in DECISION_KINDS:
+                return vn
+        return "DEFER"
+
+
+PASS_KINDS = ("ACTOR", "OBJECT", "STATE", "ACTION")
 
 
 class Stage2DecisionOutputLLM(BaseModel):
-    """LLM output: no seed_claim_id; evidence_refs snippet-only. Convert to Stage2DecisionOutput after resolution."""
+    """LLM output: decision (kind + optional evidence_refs) and optional attachments. pass_kind/canonical_claim_id set by runner."""
 
     model_config = ConfigDict(extra="ignore")
 
-    pass_kind: Annotated[
-        Literal["ACTOR", "OBJECT", "STATE", "ACTION"],
-        Field(description="Must match the pass that produced this decision"),
-    ]
     decision: DecisionBlockLLM
-    normalization: NormalizationBlock = Field(default_factory=NormalizationBlock)
     attachments: AttachmentsBlock = Field(default_factory=AttachmentsBlock)
-    conflict: ConflictBlock = Field(default_factory=ConflictBlock)
 
 
 class Stage2DecisionOutput(BaseModel):
-    """Internal Stage-2 decision (after filling seed_claim_id and resolving evidence_refs); used by applier and audit."""
+    """Internal Stage-2 decision (pass_kind, seed_claim_id, canonical_claim_id set by runner); used by applier and audit."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -111,6 +115,4 @@ class Stage2DecisionOutput(BaseModel):
     ]
     seed_claim_id: str
     decision: DecisionBlock
-    normalization: NormalizationBlock = Field(default_factory=NormalizationBlock)
     attachments: AttachmentsBlock = Field(default_factory=AttachmentsBlock)
-    conflict: ConflictBlock = Field(default_factory=ConflictBlock)

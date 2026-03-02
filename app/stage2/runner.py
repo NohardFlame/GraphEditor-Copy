@@ -9,11 +9,18 @@ from typing import Any
 
 from app.db.session import session_scope
 from app.llm.client_litellm import LiteLLMClient
+from app.llm.providers import completion_kwargs_for_provider
+from app.llm.settings import LLMSettings
 from app.llm.types import LLMMessage, LLMRequest, LLMProvider
 from app.stage1.repo import Stage1ClaimRepo, Stage1LlmCallRepo, Stage1RunRepo, get_workspace_id_for_document
 from app.stage2.context_pack import ContextPackBuilder
 from app.stage2.decision_applier import apply_decision
 from app.stage2.prompt_builder import build_messages
+from app.stage2.qdrant import (
+    STAGE1_CANONICALS_COLLECTION,
+    delete_claim_points,
+    upsert_claim_to_canonicals,
+)
 from app.stage2.schema import (
     DecisionBlock,
     EvidenceRef,
@@ -101,27 +108,30 @@ def _resolve_evidence_refs(
 def _llm_to_internal(
     llm: Stage2DecisionOutputLLM,
     seed_claim_id: str,
+    pass_kind: str,
     resolution_map: list[dict[str, Any]],
+    pack: dict[str, Any] | None = None,
 ) -> Stage2DecisionOutput:
-    """Fill seed_claim_id and resolve evidence_refs; return Stage2DecisionOutput."""
+    """Build internal decision: pass_kind and seed_claim_id from context; canonical_claim_id from pack when kind==MERGE_INTO."""
     resolved = _resolve_evidence_refs(
         [r.model_dump() for r in llm.decision.evidence_refs],
         resolution_map or [],
     )
+    canonical_claim_id = None
+    if llm.decision.kind == "MERGE_INTO" and pack:
+        closest = pack.get("closest_canonical")
+        if closest:
+            canonical_claim_id = closest.get("claim_id")
     decision = DecisionBlock(
         kind=llm.decision.kind,
-        canonical_claim_id=llm.decision.canonical_claim_id,
-        confidence=llm.decision.confidence,
-        rationale=llm.decision.rationale,
+        canonical_claim_id=canonical_claim_id,
         evidence_refs=resolved,
     )
     return Stage2DecisionOutput(
-        pass_kind=llm.pass_kind,
+        pass_kind=pass_kind,
         seed_claim_id=seed_claim_id,
         decision=decision,
-        normalization=llm.normalization,
         attachments=llm.attachments,
-        conflict=llm.conflict,
     )
 
 
@@ -171,9 +181,12 @@ async def _process_one_seed(
         response_format={"type": "json_object"},
         cache_system_prompt=True,
     )
+    completion_kwargs = completion_kwargs_for_provider(provider, LLMSettings())
 
     try:
-        resp = await client.acompletion(provider, model_id, req, timeout_s=timeout_s)
+        resp = await client.acompletion(
+            provider, model_id, req, timeout_s=timeout_s, **completion_kwargs
+        )
     except Exception as e:
         logger.warning("Stage2 LLM failed for seed %s (%s): %s", seed_claim_id, pass_kind, e)
         with session_scope() as session:
@@ -238,9 +251,9 @@ async def _process_one_seed(
             )
         return False, "Parse failed"
 
-    # All ID substitution (seed_claim_id, evidence_refs claim_id/evidence_id/chunk_id) is done here, not by the LLM.
+    # We set seed_claim_id, pass_kind, and canonical_claim_id (from pack when MERGE_INTO); evidence_refs resolved from pack.
     resolution_map = pack.get("_resolution") or []
-    decision = _llm_to_internal(llm_decision, seed_claim_id, resolution_map)
+    decision = _llm_to_internal(llm_decision, seed_claim_id, pass_kind, resolution_map, pack)
 
     with session_scope() as session:
         apply_decision(session, decision, claim_repo=claim_repo)
@@ -259,6 +272,35 @@ async def _process_one_seed(
             status="SUCCESS",
         )
 
+    # Push accepted claim to canonicals collection so it can be used as closest canonical later
+    if decision.decision.kind == "ACCEPT_AS_CANONICAL":
+        await upsert_claim_to_canonicals(
+            seed_claim_id,
+            collection_name_cards=collection_name,
+            collection_name_canonicals=STAGE1_CANONICALS_COLLECTION,
+            vector_size=vector_size,
+        )
+    elif decision.decision.kind == "MERGE_INTO":
+        if decision.decision.canonical_claim_id:
+            await upsert_claim_to_canonicals(
+                decision.decision.canonical_claim_id,
+                collection_name_cards=collection_name,
+                collection_name_canonicals=STAGE1_CANONICALS_COLLECTION,
+                vector_size=vector_size,
+            )
+        else:
+            # Override: MERGE_INTO with no canonical → we accepted seed as canonical
+            await upsert_claim_to_canonicals(
+                seed_claim_id,
+                collection_name_cards=collection_name,
+                collection_name_canonicals=STAGE1_CANONICALS_COLLECTION,
+                vector_size=vector_size,
+            )
+
+    # Remove from Qdrant claims that are no longer candidates (REJECT / MERGE_INTO)
+    if decision.decision.kind in ("REJECT", "MERGE_INTO"):
+        await delete_claim_points(collection_name, [seed_claim_id])
+
     return True, None
 
 
@@ -275,7 +317,9 @@ async def _run_pass_async(
 ) -> dict[str, Any]:
     """Run one pass (e.g. ACTOR). Returns stats dict."""
     with session_scope() as session:
-        seeds = claim_repo.list_claims_unreviewed_by_type(session, stage1_run_id, pass_kind)
+        seeds = claim_repo.list_claims_unreviewed_by_type(
+            session, stage1_run_id, pass_kind, embedded_only=True
+        )
         seed_ids = [c.id for c in seeds]
 
     processed = 0

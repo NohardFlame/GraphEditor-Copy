@@ -65,22 +65,42 @@ def _format_value_fields(claim_type: str, value: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_evidence_with_excerpts(evidence_list: list[dict[str, Any]]) -> list[str]:
+    """Format evidence list: each snippet, and if present its chunk_excerpt."""
+    lines = []
+    for e in evidence_list:
+        snippet = (e.get("snippet") or "").strip()
+        chunk_excerpt = (e.get("chunk_excerpt") or "").strip()
+        if snippet:
+            lines.append(f"evidence: {snippet}")
+        if chunk_excerpt:
+            lines.append(chunk_excerpt)
+    return lines
+
+
 def _format_block(block: dict[str, Any]) -> str:
-    """Format one claim block as unpacked text: type, value fields, evidence, chunk snippet."""
+    """Format one claim block: type, value fields, evidence (with per-evidence excerpts if present), or legacy chunk_excerpt."""
     claim_type = block.get("claim_type", "")
     value = block.get("value") or {}
     evidence_list = block.get("evidence") or []
-    chunk_excerpt = (block.get("chunk_excerpt") or "").strip()
+    chunk_excerpt_block = (block.get("chunk_excerpt") or "").strip()
 
     lines = [f"type: {claim_type}"]
     lines.extend(_format_value_fields(claim_type, value))
-    snippets = [e.get("snippet", "").strip() for e in evidence_list if (e.get("snippet") or "").strip()]
-    if snippets:
-        lines.append("evidence: " + " | ".join(snippets))
-    elif "evidence:" not in "\n".join(lines):
-        lines.append("evidence:")
-    if chunk_excerpt:
-        lines.append(chunk_excerpt)
+
+    # Per-evidence excerpts: if any evidence item has chunk_excerpt, show each snippet + excerpt
+    has_per_evidence_excerpts = any((e.get("chunk_excerpt") or "").strip() for e in evidence_list)
+    if has_per_evidence_excerpts:
+        lines.extend(_format_evidence_with_excerpts(evidence_list))
+    else:
+        # Legacy: snippets only, then single block-level chunk_excerpt (e.g. seed)
+        snippets = [e.get("snippet", "").strip() for e in evidence_list if (e.get("snippet") or "").strip()]
+        if snippets:
+            lines.append("evidence: " + " | ".join(snippets))
+        elif "evidence:" not in "\n".join(lines):
+            lines.append("evidence:")
+        if chunk_excerpt_block:
+            lines.append(chunk_excerpt_block)
     return "\n".join(lines)
 
 

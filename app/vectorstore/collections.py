@@ -176,3 +176,110 @@ async def ensure_stage1_cards_collection(
             )
         except Exception:
             pass
+
+
+async def ensure_stage1_canonicals_collection(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    vector_size: int,
+    distance: str = "Cosine",
+) -> None:
+    """Ensure Stage-1 canonicals collection exists (same schema as stage1_cards). Create if missing; validate if exists."""
+    dist = _qdrant_distance(distance)
+    exists = await client.collection_exists(collection_name)
+    if not exists:
+        await client.create_collection(
+            collection_name=collection_name,
+            vectors_config=qdrant_http.VectorParams(size=vector_size, distance=dist),
+            hnsw_config=qdrant_http.HnswConfigDiff(
+                m=16,
+                ef_construct=128,
+            ),
+        )
+        for field, schema_type in STAGE1_CARDS_PAYLOAD_INDEXES:
+            try:
+                await client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field,
+                    field_schema=qdrant_http.PayloadSchemaType(schema_type),
+                )
+            except Exception:
+                pass
+        return
+
+    info = await client.get_collection(collection_name)
+    vectors_config = info.config.params.vectors
+    if isinstance(vectors_config, qdrant_http.VectorParams):
+        if vectors_config.size != vector_size or vectors_config.distance != dist:
+            raise VectorSchemaMismatchError(
+                f"Collection {collection_name} has size={vectors_config.size} distance={vectors_config.distance}, "
+                f"expected size={vector_size} distance={dist}. Migration (new collection + reindex) required."
+            )
+    for field, schema_type in STAGE1_CARDS_PAYLOAD_INDEXES:
+        try:
+            await client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=qdrant_http.PayloadSchemaType(schema_type),
+            )
+        except Exception:
+            pass
+
+
+# Stage-3 cards: payload indexes for retrieval by doc_id and kind
+STAGE3_CARDS_PAYLOAD_INDEXES = [
+    ("doc_id", qdrant_http.PayloadSchemaType.KEYWORD),
+    ("canonical_claim_id", qdrant_http.PayloadSchemaType.KEYWORD),
+    ("kind", qdrant_http.PayloadSchemaType.KEYWORD),
+    ("prompt_version", qdrant_http.PayloadSchemaType.KEYWORD),
+    ("model_id", qdrant_http.PayloadSchemaType.KEYWORD),
+    ("embedding_model_id", qdrant_http.PayloadSchemaType.KEYWORD),
+]
+
+
+async def ensure_stage3_cards_collection(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    vector_size: int,
+    distance: str = "Cosine",
+) -> None:
+    """Ensure Stage-3 cards collection exists. Create if missing; validate if exists."""
+    dist = _qdrant_distance(distance)
+    exists = await client.collection_exists(collection_name)
+    if not exists:
+        await client.create_collection(
+            collection_name=collection_name,
+            vectors_config=qdrant_http.VectorParams(size=vector_size, distance=dist),
+            hnsw_config=qdrant_http.HnswConfigDiff(
+                m=16,
+                ef_construct=128,
+            ),
+        )
+        for field, schema_type in STAGE3_CARDS_PAYLOAD_INDEXES:
+            try:
+                await client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field,
+                    field_schema=qdrant_http.PayloadSchemaType(schema_type),
+                )
+            except Exception:
+                pass
+        return
+
+    info = await client.get_collection(collection_name)
+    vectors_config = info.config.params.vectors
+    if isinstance(vectors_config, qdrant_http.VectorParams):
+        if vectors_config.size != vector_size or vectors_config.distance != dist:
+            raise VectorSchemaMismatchError(
+                f"Collection {collection_name} has size={vectors_config.size} distance={vectors_config.distance}, "
+                f"expected size={vector_size} distance={dist}. Migration (new collection + reindex) required."
+            )
+    for field, schema_type in STAGE3_CARDS_PAYLOAD_INDEXES:
+        try:
+            await client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=qdrant_http.PayloadSchemaType(schema_type),
+            )
+        except Exception:
+            pass

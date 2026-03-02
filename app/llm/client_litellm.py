@@ -152,6 +152,7 @@ class LiteLLMClient:
         timeout_s: float | None = None,
         api_base: str | None = None,
         api_key: str | None = None,
+        extra_completion_kwargs: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Execute one completion. Applies semaphore, timeout, retries. Raises LLMError on failure."""
         timeout = timeout_s if timeout_s is not None else req.timeout_s or 60.0
@@ -162,6 +163,8 @@ class LiteLLMClient:
             kwargs["api_base"] = api_base
         if api_key is not None:
             kwargs["api_key"] = api_key
+        if extra_completion_kwargs:
+            kwargs.update(extra_completion_kwargs)
 
         last_error: LLMError | None = None
         for attempt in range(self._max_retries + 1):

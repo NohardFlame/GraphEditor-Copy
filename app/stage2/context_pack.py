@@ -14,7 +14,12 @@ from app.db.models.pipeline_run import PipelineRun
 from app.db.repositories.chunk_repo import ChunkRepo
 from app.stage1.cards import build_card_text, build_dedupe_key
 from app.stage1.repo import Stage1ClaimRepo
-from app.stage2.qdrant import search_similar_claims
+from app.stage2.qdrant import (
+    STAGE1_CANONICALS_COLLECTION,
+    search_closest_canonical,
+    search_similar_claims,
+    seed_exists_in_collection,
+)
 
 # Unicode replacement character; some LLM APIs return empty when it appears in the prompt
 _REPLACEMENT_CHAR = "\uFFFD"
@@ -51,13 +56,13 @@ def _sanitize_pack(obj: Any) -> Any:
 
 # Plan §04: cross-type counts per pass (max per type)
 CROSS_TYPE_CAPS: dict[str, dict[str, int]] = {
-    "ACTOR": {"ACTION": 4, "OBJECT": 3, "STATE": 2},
-    "OBJECT": {"ACTION": 4, "ACTOR": 3, "STATE": 2},
-    "STATE": {"OBJECT": 3, "ACTION": 3, "ACTOR": 2},
-    "ACTION": {"ACTOR": 4, "OBJECT": 4, "STATE": 2},
+    "ACTOR": {"ACTION": 3, "OBJECT": 1, "STATE": 1},
+    "OBJECT": {"ACTION": 2, "ACTOR": 1, "STATE": 1},
+    "STATE": {"OBJECT": 3, "ACTION": 3, "ACTOR": 0},
+    "ACTION": {"ACTOR": 1, "OBJECT": 1, "STATE": 1},
 }
 
-SAME_TYPE_LIMIT = 10
+SAME_TYPE_LIMIT = 3
 CROSS_TYPE_SEARCH_LIMIT = 25
 
 # Chunk excerpt: window around first evidence snippet (chars before, chars after)
@@ -66,6 +71,11 @@ CHUNK_EXCERPT_AFTER = 100
 SAME_TYPE_CHUNK_BEFORE = 50
 SAME_TYPE_CHUNK_AFTER = 50
 CHUNK_FALLBACK_CHARS = 200
+
+# Number of evidence items (with excerpts) to include for closest canonical claim
+CANONICAL_EVIDENCE_COUNT = 5
+# Max evidence items per neighbor block (each with its own excerpt)
+NEIGHBOR_EVIDENCE_CAP = 5
 
 
 def _parse_value(value_json: str) -> dict:
@@ -87,6 +97,31 @@ def _evidence_list_with_ids(claim: Claim) -> list[dict[str, Any]]:
             "snippet": (ev.snippet_text or "").strip(),
         })
     return out
+
+
+def _excerpt_around_evidence(
+    chunk_repo: ChunkRepo,
+    session: Session,
+    ev: Any,
+    before_chars: int,
+    after_chars: int,
+) -> str:
+    """Get chunk excerpt centered on one evidence item. Same sanitization as _chunk_excerpt_around_first_evidence."""
+    excerpt = chunk_repo.get_excerpt_around_snippet(
+        session,
+        ev.chunk_id,
+        ev.snippet_text or "",
+        before_chars=before_chars,
+        after_chars=after_chars,
+        fallback_chars=CHUNK_FALLBACK_CHARS,
+    )
+    if not excerpt:
+        return ""
+    excerpt = " ".join(excerpt.split())
+    for q in ('"', '"', '"'):
+        excerpt = excerpt.replace(q, " ")
+    excerpt = " ".join(excerpt.split())
+    return excerpt
 
 
 def _chunk_excerpt_around_first_evidence(
@@ -125,6 +160,30 @@ def _chunk_excerpt_around_first_evidence(
     return "(no evidence)"
 
 
+def _evidence_list_with_excerpts(
+    claim: Claim,
+    chunk_repo: ChunkRepo,
+    session: Session,
+    limit: int,
+    before_chars: int,
+    after_chars: int,
+) -> list[dict[str, Any]]:
+    """Build evidence list with evidence_id, chunk_id, snippet, and chunk_excerpt per item."""
+    out = []
+    for ev in (claim.evidence or [])[:limit]:
+        snippet = (ev.snippet_text or "").strip()
+        chunk_excerpt = _excerpt_around_evidence(
+            chunk_repo, session, ev, before_chars, after_chars
+        )
+        out.append({
+            "evidence_id": ev.id,
+            "chunk_id": ev.chunk_id,
+            "snippet": snippet,
+            "chunk_excerpt": chunk_excerpt,
+        })
+    return out
+
+
 def _claim_to_seed_block(
     claim: Claim,
     chunk_repo: ChunkRepo,
@@ -146,28 +205,55 @@ def _claim_to_seed_block(
     }
 
 
-def _claim_to_neighbor_block(
+def _claim_to_canonical_block(
     claim: Claim,
     chunk_repo: ChunkRepo,
     session: Session,
-    same_type: bool,
+    canonical_evidence_count: int,
 ) -> dict[str, Any]:
-    """Build neighbor block: same shape as seed; shorter chunk excerpt for same-type."""
+    """Build closest-canonical block: up to N evidence items, each with its own chunk excerpt."""
     value = _parse_value(claim.value_json)
-    evidence_list = _evidence_list_with_ids(claim)
-    if same_type:
-        before, after = SAME_TYPE_CHUNK_BEFORE, SAME_TYPE_CHUNK_AFTER
-    else:
-        before, after = CHUNK_EXCERPT_BEFORE, CHUNK_EXCERPT_AFTER
-    chunk_excerpt = _chunk_excerpt_around_first_evidence(
-        chunk_repo, session, claim, before, after,
+    evidence_list = _evidence_list_with_excerpts(
+        claim,
+        chunk_repo,
+        session,
+        limit=canonical_evidence_count,
+        before_chars=CHUNK_EXCERPT_BEFORE,
+        after_chars=CHUNK_EXCERPT_AFTER,
     )
     return {
         "claim_id": claim.id,
         "claim_type": claim.claim_type,
         "value": value,
         "evidence": evidence_list,
-        "chunk_excerpt": chunk_excerpt,
+    }
+
+
+def _claim_to_neighbor_block(
+    claim: Claim,
+    chunk_repo: ChunkRepo,
+    session: Session,
+    same_type: bool,
+) -> dict[str, Any]:
+    """Build neighbor block: per-evidence chunk excerpts (no single block-level excerpt)."""
+    value = _parse_value(claim.value_json)
+    if same_type:
+        before, after = SAME_TYPE_CHUNK_BEFORE, SAME_TYPE_CHUNK_AFTER
+    else:
+        before, after = CHUNK_EXCERPT_BEFORE, CHUNK_EXCERPT_AFTER
+    evidence_list = _evidence_list_with_excerpts(
+        claim,
+        chunk_repo,
+        session,
+        limit=NEIGHBOR_EVIDENCE_CAP,
+        before_chars=before,
+        after_chars=after,
+    )
+    return {
+        "claim_id": claim.id,
+        "claim_type": claim.claim_type,
+        "value": value,
+        "evidence": evidence_list,
     }
 
 
@@ -211,12 +297,14 @@ class ContextPackBuilder:
         chunk_repo: ChunkRepo | None = None,
         collection_name: str = "stage1_cards",
         vector_size: int = 768,
+        canonical_evidence_count: int = CANONICAL_EVIDENCE_COUNT,
     ):
         self._session = session
         self._claim_repo = claim_repo or Stage1ClaimRepo()
         self._chunk_repo = chunk_repo or ChunkRepo()
         self._collection_name = collection_name
         self._vector_size = vector_size
+        self._canonical_evidence_count = canonical_evidence_count
 
     async def build(
         self,
@@ -236,6 +324,12 @@ class ContextPackBuilder:
         run = self._session.get(PipelineRun, run_id)
         doc_id = document_id or (run.document_id if run else None)
         if not doc_id:
+            return None
+
+        # Optional safeguard: skip seed if not in Qdrant (e.g. stale DB state)
+        if not await seed_exists_in_collection(
+            seed_claim_id, collection_name=self._collection_name
+        ):
             return None
 
         session = self._session
@@ -266,17 +360,25 @@ class ContextPackBuilder:
                 for c in neighbors
             ]
 
-        # Closest canonical: first same-type hit that is ACCEPTED (by cosine), so LLM can choose MERGE_INTO
-        accepted_ids_set = set(claim_repo.list_accepted_claim_ids(session, run_id, pass_kind))
-        for h in same_type_hits:
-            if h.claim_id in accepted_ids_set:
-                canonical_claims = self._load_claims_with_evidence([h.claim_id])
-                if canonical_claims:
-                    c = canonical_claims[0]
-                    pack["closest_canonical"] = _claim_to_neighbor_block(
-                        c, chunk_repo, session, same_type=False
-                    )
-                break
+        # Closest canonical: search stage1_canonicals (ACCEPTED only) so LLM can choose MERGE_INTO
+        closest_hit = await search_closest_canonical(
+            seed_claim_id,
+            doc_id,
+            pass_kind,
+            collection_name_cards=self._collection_name,
+            collection_name_canonicals=STAGE1_CANONICALS_COLLECTION,
+            vector_size=self._vector_size,
+        )
+        if closest_hit:
+            canonical_claims = self._load_claims_with_evidence([closest_hit.claim_id])
+            if canonical_claims:
+                c = canonical_claims[0]
+                pack["closest_canonical"] = _claim_to_canonical_block(
+                    c,
+                    chunk_repo,
+                    session,
+                    self._canonical_evidence_count,
+                )
 
         # Cross-type: mixed search, then partition by type and cap
         cross_caps = CROSS_TYPE_CAPS.get(pass_kind, {})

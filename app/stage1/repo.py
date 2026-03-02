@@ -362,8 +362,11 @@ class Stage1ClaimRepo:
         session: Session,
         run_id: str,
         claim_type: str,
+        *,
+        embedded_only: bool = False,
     ) -> list[Claim]:
-        """List claims with review_status=UNREVIEWED and given claim_type, ordered by created_at."""
+        """List claims with review_status=UNREVIEWED and given claim_type, ordered by created_at.
+        If embedded_only is True, only return claims with embedding_status == EMBEDDED."""
         q = (
             select(Claim)
             .where(
@@ -373,6 +376,8 @@ class Stage1ClaimRepo:
             )
             .order_by(Claim.created_at.asc())
         )
+        if embedded_only:
+            q = q.where(Claim.embedding_status == "EMBEDDED")
         rows = session.execute(q).scalars().all()
         return list(rows)
 
@@ -388,8 +393,9 @@ class Stage1ClaimRepo:
             Claim.review_status == "ACCEPTED",
             Claim.claim_type == claim_type,
         )
+        # .scalars().all() returns list of scalar values (the id column), not list of Row
         rows = session.execute(q).scalars().all()
-        return [r[0] for r in rows]
+        return [str(r) for r in rows]
 
     def get_claim_with_evidence(self, session: Session, claim_id: str) -> Claim | None:
         """Load claim by id with evidence eager-loaded."""

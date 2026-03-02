@@ -9,6 +9,7 @@ from app.db.models.query import Query, QueryResult
 from app.db.models.extract_run import ExtractRun
 from app.db.models.pipeline_run import ChunkExtraction, ChunkRun, PipelineRun
 from app.db.models.claim import Claim, ClaimEvidence, LlmCall
+from app.db.models.stage3 import Stage3ObjectBaked, Stage3ResolvedCard
 from app.llm.persistence.models import LLMRun  # noqa: F401 — register for Alembic
 
 __all__ = [
@@ -32,4 +33,6 @@ __all__ = [
     "ClaimEvidence",
     "LlmCall",
     "LLMRun",
+    "Stage3ResolvedCard",
+    "Stage3ObjectBaked",
 ]

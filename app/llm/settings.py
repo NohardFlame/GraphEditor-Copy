@@ -33,6 +33,11 @@ class LLMSettings(BaseSettings):
     ollama_enabled: bool = Field(default=True, description="Enable Ollama provider")
     ollama_api_base: str = Field(default="http://localhost:11434", description="Ollama server URL")
     ollama_model: str = Field(default="ollama/llama3.2", description="Ollama model (ollama/ prefix)")
+    ollama_num_ctx: int | None = Field(
+        default=None,
+        gt=0,
+        description="Ollama context length in tokens (num_ctx); unset = server default (env: LLM_OLLAMA_NUM_CTX)",
+    )
     ollama_force_chat: bool = Field(default=True, description="Use chat endpoint for Ollama")
 
     gemini_enabled: bool = Field(default=True, description="Enable Gemini (Google AI Studio)")

@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from app.llm.client_litellm import LiteLLMClient
+from app.llm.providers import completion_kwargs_for_provider
+from app.llm.settings import LLMSettings
 from app.llm.types import LLMMessage, LLMRequest, LLMProvider
 from app.stage1.parser_registry import parse_with_registry
 from app.stage1.schema import Stage1ExtractionResult
@@ -66,10 +68,13 @@ async def extract_one_chunk(
         response_format={"type": "json_object"},
         cache_system_prompt=True,
     )
+    completion_kwargs = completion_kwargs_for_provider(provider, LLMSettings())
     raw_text: str | None = None
     usage_dict: dict[str, Any] | None = None
     try:
-        resp = await client.acompletion(provider, model_id, req, timeout_s=timeout_s)
+        resp = await client.acompletion(
+            provider, model_id, req, timeout_s=timeout_s, **completion_kwargs
+        )
         raw_text = resp.text
         usage_dict = {
             "prompt_tokens": resp.usage.input_tokens if resp.usage else 0,

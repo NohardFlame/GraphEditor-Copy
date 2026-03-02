@@ -1,41 +1,40 @@
 # Stage‑2 Decision Output (JSON)
 
-Output a **single JSON object**. The system adds `seed_claim_id` and resolves evidence IDs from your snippets; you never output those.
+Output a **single JSON object**. The system sets `seed_claim_id`, `pass_kind`, and (when you choose MERGE_INTO) `canonical_claim_id` from the context; it also resolves evidence IDs from your snippets. You never output those.
 
-**Required from you:**
-- **pass_kind** — `"ACTOR"` | `"OBJECT"` | `"STATE"` | `"ACTION"` (match the current pass).
-- **decision.kind** — `"ACCEPT_AS_CANONICAL"` | `"MERGE_INTO"` | `"REJECT"` | `"DEFER"` | `"SPLIT_CONFLICT"`.
-- **decision.confidence** — number 0.0–1.0.
-- **decision.rationale** — short explanation why decision was made.
-- **decision.evidence_refs** — array of `{ "snippet": "exact quote from context" }`. No IDs; we resolve them.
+**Required from you, MUST PROVIDE:**
+- **decision.kind** — `"ACCEPT_AS_CANONICAL"` | `"MERGE_INTO"` | `"REJECT"`
+- **decision.new_entity_reason** — reason on why new claim has been accepted (null if MERGE_INTO is chosen)
 
-**IF decision.kind is:**
-- **MERGE_INTO** — only when a **Closest canonical** block is present: set `decision.canonical_claim_id` to the **canonical_claim_id** shown in that block. If that block is not in the context, do not use MERGE_INTO.
-- **ACCEPT_AS_CANONICAL** / **MERGE_INTO** — optionally set `normalization.canonical_label`, `normalization.aliases`, `normalization.notes`.
+**decision.kind explanation:**
+- ACCEPT_AS_CANONICAL: seed claim seems valid based on provided evidence.
+- MERGE_INTO: only when a **Closest canonical** block is present in the context. Seed claim seems valid but is the same entity as that canonical; the system will set `canonical_claim_id` for you. If no Closest canonical block is in the context, do not use MERGE_INTO.
+- REJECT: seed statement seems to be a hallucination; based on the provided chunk/neighbors, the seed does not fit as a separate entity.
 
-**IF pass_kind is:**
-- **ACTION** pass — optionally set `attachments.action_endpoints.actor_claim_id` and `object_claim_id` when you can link to ACTOR/OBJECT claims.
+**Optional:**
+- **attachments** — for **ACTION** pass only: optionally `attachments.action_endpoints.actor_claim_id`, `object_claim_id` when you can link to canonical ACTOR/OBJECT claims from context.
+- **attachments** — for **ACTION** pass only: optionally `attachments.state_endpoints.object_claim_id`, when you can link to canonical OBJECT claims from context.
 
-**IF provided context conflicts each other:**
-- **SPLIT_CONFLICT** — set `conflict.members` (each: `claim_id`, `role`, `reason`); leave `canonical_claim_id` null.
-
-**JSON schema**
+**Minimal JSON example:**
+```json
 {
-  "pass_kind": "<pass_kind>",
-  "decision": {
-    "kind": "<decision.kind>",
-    "canonical_claim_id": <canonical claim id only if MERGE_INTO, else null>,
-    "confidence": "<decision.confidence>",
-    "rationale": "<decision.rationale>",
-    "evidence_refs": "<decision.evidence_refs>"
-  },
-  "normalization": { "canonical_label": "<self label if ACCEPT_AS_CANONICAL, canonical claim label if MERGE_INTO>", "aliases" [<list of aliases, if present in context>]: , "notes": <short note of normalisation> },
-  "attachments": {
-    "object_claim_ids": [],
-    "actor_claim_ids": [],
-    "action_endpoints": { "actor_claim_id": <claim id of actor if action can be linked to it ONLY if pass_kind is action>, "object_claim_id": <claim id of object if action can be linked to it ONLY if pass_kind is action> }
-  },
-  "conflict": { "group_label": null, "members": [] }
+  "decision": { "kind": <desision here>,
+    "new_entity_reason": <reason here>
+  }
 }
+```
 
-Omit or null optional fields when not needed. The parser accepts this shape and the system fills `seed_claim_id` and evidence ref IDs.
+With optional attachments (for action and state only):
+```json
+{
+  "decision": {
+    "kind": "MERGE_INTO",
+  },
+  "attachments": {
+    "action_endpoints": { "actor_claim_id": null, "object_claim_id": null },
+    "state_endpoints": { "object_claim_id": null }
+  }
+}
+```
+
+Omit or null optional fields when not needed.

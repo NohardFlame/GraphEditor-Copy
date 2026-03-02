@@ -15,7 +15,7 @@ from app.llm.errors import (
     LLMWorkspaceRequiredError,
 )
 from app.llm.ports import LLMClientPort, LLMRunRepoPort
-from app.llm.providers import gemini_kwargs, ollama_kwargs
+from app.llm.providers import completion_kwargs_for_provider, gemini_kwargs, ollama_kwargs
 from app.llm.router import LLMRouter
 from app.llm.settings import LLMSettings
 from app.llm.telemetry import log_llm_call, redact_preview, stable_hash
@@ -158,6 +158,9 @@ class LLMService:
             else:
                 k = gemini_kwargs(self._settings)
             try:
+                completion_extra = completion_kwargs_for_provider(current, self._settings).get(
+                    "extra_completion_kwargs"
+                )
                 resp = await self._client.acompletion(
                     current,
                     model_current,
@@ -165,6 +168,7 @@ class LLMService:
                     timeout_s=timeout_s,
                     api_base=k.get("api_base"),
                     api_key=k.get("api_key"),
+                    extra_completion_kwargs=completion_extra,
                 )
                 if persist and run_repo is not None and run_id is not None:
                     await run_repo.mark_succeeded(
