@@ -1,4 +1,8 @@
-"""Repositories for CRUD and idempotent operations."""
+"""Repositories for CRUD and idempotent operations.
+
+CanonicalRepo is not imported here to avoid circular imports (canonical_repo -> app.canonical -> service -> canonical_repo).
+Import it as: from app.db.repositories.canonical_repo import CanonicalRepo
+"""
 from app.db.repositories.workspace_repo import WorkspaceRepo
 from app.db.repositories.source_repo import SourceRepo, SourceVersionRepo
 from app.db.repositories.document_repo import DocumentRepo

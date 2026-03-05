@@ -1,0 +1,12 @@
+{
+  "run_id": "579b079d-1163-46ac-a975-592b263c85b3",
+  "doc_id": "bd20f153-1c39-40c9-9ad8-36094df317ae",
+  "prompt_version": "big_extract_v1",
+  "model_id": "manual",
+  "parts": [
+    {
+      "part_index": 0,
+      "file": "part_0.txt"
+    }
+  ]
+}

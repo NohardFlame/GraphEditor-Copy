@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, IdMixin
 
 if TYPE_CHECKING:
+    from app.db.models.extraction import ExtractionRun
     from app.db.models.pipeline_run import PipelineRun
 
 
@@ -18,10 +19,16 @@ class LlmCall(Base, IdMixin):
 
     __tablename__ = "llm_calls"
 
-    run_id: Mapped[str] = mapped_column(
+    run_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    extraction_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("extraction_runs.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     chunk_id: Mapped[str | None] = mapped_column(
@@ -33,6 +40,7 @@ class LlmCall(Base, IdMixin):
     signature_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -43,8 +51,13 @@ class LlmCall(Base, IdMixin):
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    pipeline_run: Mapped["PipelineRun"] = relationship(  # noqa: F821
-        "PipelineRun", back_populates="llm_calls"
+    pipeline_run: Mapped["PipelineRun | None"] = relationship(  # noqa: F821
+        "PipelineRun", back_populates="llm_calls", foreign_keys=[run_id]
+    )
+    extraction_run: Mapped["ExtractionRun | None"] = relationship(
+        "ExtractionRun",
+        back_populates="llm_calls",
+        foreign_keys=[extraction_run_id],
     )
 
 
